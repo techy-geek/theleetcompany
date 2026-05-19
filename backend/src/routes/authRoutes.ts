@@ -1,64 +1,71 @@
 import express from 'express';
 import passport from 'passport';
 import jwt from 'jsonwebtoken';
-import { protect, AuthRequest } from '../middlewares/auth';
 import dotenv from 'dotenv';
-
+import User from '../models/User.js';
 dotenv.config();
 const router = express.Router();
 
-// Generate JWT Helper
 const generateToken = (id: string) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET || 'fallback_secret', {
-    expiresIn: '30d',
-  });
-};
+  return jwt.sign({ id }, process.env.JWT_SECRET as string, {
+    expiresIn: '30d'
+  })
+}
 
-// @route   GET /api/auth/google
-// @desc    Auth with Google
-// @access  Public
+// 1. The route to trigger the Google login screen
 router.get('/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
 
-// @route   GET /api/auth/google/callback
-// @desc    Google auth callback
-// @access  Public
+// 2. The callback route where Google sends the user after successful login
 router.get(
   '/google/callback',
   passport.authenticate('google', { session: false, failureRedirect: '/login' }),
   (req, res) => {
-    // Generate token
     const user = req.user as any;
-    const token = generateToken(user._id);
+    const token = generateToken(user._id.toString()); // Generate the VIP wristband
 
-    // Set cookie
+    // Set the secure, HTTP-only cookie
     res.cookie('jwt', token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production', // true in prod
+      secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
-    // Redirect to frontend
-    res.redirect(process.env.FRONTEND_URL || 'http://localhost:3000');
+    res.redirect('http://localhost:3000/questions'); // Redirect back to React frontend
   }
 );
 
-// @route   GET /api/auth/me
-// @desc    Get current user
-// @access  Private
-router.get('/me', protect, (req: AuthRequest, res) => {
-  res.json(req.user);
+router.get('/me', async (req, res) => {
+  try {
+    const token = req.cookies.jwt;
+    if (!token) {
+      return res.status(401).json({ message: 'Not authenticated' });
+    }
+    // Verify the token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as { id: string };
+
+    // Find the user (include googleId temporarily for picture backfill)
+    const user = await User.findById(decoded.id);
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Return user without googleId
+    const { googleId, ...safeUser } = user.toObject();
+    res.json(safeUser);
+  } catch (error) {
+    res.status(401).json({ message: 'Invalid token' });
+  }
 });
 
-// @route   POST /api/auth/logout
-// @desc    Logout user / clear cookie
-// @access  Public
-router.post('/logout', (req, res) => {
-  res.cookie('jwt', '', {
+router.get('/logout', (req, res) => {
+  res.clearCookie('jwt', {
     httpOnly: true,
-    expires: new Date(0),
+    secure:   process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
   });
-  res.status(200).json({ message: 'Logged out successfully' });
+  res.json({ message: 'Logged out successfully' });
 });
 
 export default router;
