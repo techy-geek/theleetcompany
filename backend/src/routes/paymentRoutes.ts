@@ -1,76 +1,64 @@
 import express from 'express';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
-import { protect, AuthRequest } from '../middlewares/auth';
-import User from '../models/User';
+import User from '../models/User.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
 const router = express.Router();
 
+// Initialize the Razorpay SDK with our secret keys from .env
 const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID || 'PLACEHOLDER_KEY',
-  key_secret: process.env.RAZORPAY_KEY_SECRET || 'PLACEHOLDER_SECRET',
+  key_id: process.env.RAZORPAY_KEY_ID as string,
+  key_secret: process.env.RAZORPAY_KEY_SECRET as string,
 });
 
 // @route   POST /api/payments/create-order
-// @desc    Create a Razorpay order
-// @access  Private
-router.post('/create-order', protect, async (req: AuthRequest, res) => {
+// @desc    Creates an order in Razorpay (Step 1)
+router.post('/create-order', async (req, res) => {
   try {
     const options = {
-      amount: 99900, // Amount in paise (e.g., 999 INR)
+      amount: 49 * 100, // Amount is in the smallest currency unit (paise). 49 * 100 = ₹49
       currency: 'INR',
-      receipt: `receipt_order_${req.user?._id}`,
+      receipt: `receipt_order_${Math.random() * 1000}`,
     };
 
     const order = await razorpay.orders.create(options);
-
-    res.json({
-      orderId: order.id,
-      amount: order.amount,
-      currency: order.currency,
-    });
+    
+    // Send the order details to the frontend
+    res.json(order);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Error creating order' });
+    console.error('Error creating order:', error);
+    res.status(500).json({ message: 'Something went wrong' });
   }
 });
 
-// @route   POST /api/payments/webhook
-// @desc    Razorpay webhook to fulfill order
-// @access  Public (Requires raw body for signature verification)
-router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+// @route   POST /api/payments/verify
+// @desc    Verifies the digital signature from Razorpay (Step 3)
+router.post('/verify', async (req, res) => {
   try {
-    const secret = process.env.RAZORPAY_WEBHOOK_SECRET || 'PLACEHOLDER_WEBHOOK_SECRET';
-    const shasum = crypto.createHmac('sha256', secret);
-    
-    // req.body is a buffer because of express.raw
-    shasum.update(req.body);
-    const digest = shasum.digest('hex');
+    // 1. Get the signature and order details sent from the React frontend
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, userId } = req.body;
 
-    if (digest === req.headers['x-razorpay-signature']) {
-      const event = JSON.parse(req.body.toString());
+    // 2. We use Node's built-in crypto to create our own expected signature
+    const sign = razorpay_order_id + "|" + razorpay_payment_id;
+    const expectedSign = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET as string)
+      .update(sign.toString())
+      .digest("hex");
 
-      if (event.event === 'payment.captured') {
-        const payment = event.payload.payment.entity;
-        
-        // Find user by email from notes (we should pass email in notes when creating order in frontend, or look up by another identifier)
-        const email = payment.notes?.email || payment.email; 
-        
-        if (email) {
-          await User.findOneAndUpdate({ email }, { isPremium: true });
-          console.log(`User ${email} upgraded to premium via webhook`);
-        }
-      }
-
-      res.status(200).json({ status: 'ok' });
+    // 3. If our expected signature matches the one Razorpay sent, the payment is 100% authentic!
+    if (razorpay_signature === expectedSign) {
+      // Find the user in our DB and upgrade them to Premium!
+      await User.findByIdAndUpdate(userId, { isPremium: true });
+      
+      return res.status(200).json({ message: "Payment verified successfully" });
     } else {
-      res.status(400).json({ message: 'Invalid signature' });
+      return res.status(400).json({ message: "Invalid signature sent!" });
     }
   } catch (error) {
-    console.error('Webhook error:', error);
-    res.status(500).json({ message: 'Webhook error' });
+    console.error(error);
+    res.status(500).json({ message: "Internal Server Error!" });
   }
 });
 

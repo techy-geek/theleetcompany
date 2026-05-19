@@ -1,51 +1,36 @@
+import passport from './config/passport.js';
+import authRoutes from './routes/authRoutes.js';
+import paymentRoutes from './routes/paymentRoutes.js';
+import cookieParser from 'cookie-parser';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
-import cookieParser from 'cookie-parser';
-import passport from './config/passport';
-import authRoutes from './routes/authRoutes';
-import questionRoutes from './routes/questionRoutes';
-import paymentRoutes from './routes/paymentRoutes';
+import questionRoutes from './routes/questionRoutes.js';
+import progressRoutes from './routes/progressRoutes.js';
+import adminRoutes from './routes/adminRoutes.js';
 
 const app = express();
 
-// Set security HTTP headers
-app.use(helmet());
-
-// Webhook route must be before body parser
-app.use('/api/payments/webhook', paymentRoutes);
-
-// Body parser
-app.use(express.json());
-
-// Cookie parser
-app.use(cookieParser());
-
-// Enable CORS
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: "http://localhost:3000",
   credentials: true
 }));
-
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 mins
-  max: 100
-});
-app.use('/api', limiter);
-
-// Initialize Passport
+app.use(express.json());
+app.use(cookieParser());
 app.use(passport.initialize());
 
-// Routes
+// Connect the routes
 app.use('/api/auth', authRoutes);
 app.use('/api/questions', questionRoutes);
 app.use('/api/payments', paymentRoutes);
-
-// Base route
-app.get('/', (req, res) => {
-  res.send('API is running...');
+app.use('/api/progress', progressRoutes);
+app.use('/api/admin', adminRoutes);
+app.use(helmet());
+app.get("/api/health", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "API is healthy"
+  })
 });
 
 export default app;

@@ -1,37 +1,63 @@
 import express from 'express';
-import { protect, AuthRequest } from '../middlewares/auth';
-import { requirePremium } from '../middlewares/requirePremium';
-import Question from '../models/Question';
+import Question from '../models/Question.js';
+import { optionalAuth } from '../middleware/optionalAuth.js';
 
 const router = express.Router();
 
-// @route   GET /api/questions
-// @desc    Get all questions (with pagination/filtering)
-// @access  Public (Partial data for premium)
-router.get('/', async (req, res) => {
+// ── Freemium constants ──────────────────────────────────────────────────────
+const FREE_QUESTION_LIMIT = 10;   // First N questions per company are free (with links)
+
+// @route   GET /api/questions/companies
+// @desc    Returns all companies — all accessible to free users (first 10 questions each)
+router.get('/companies', optionalAuth, async (req, res) => {
   try {
-    const { company, difficulty, page = 1, limit = 20 } = req.query;
-    
-    let query: any = {};
-    if (company) query.company = company;
-    if (difficulty) query.difficulty = difficulty;
+    const isPremium = (req as any).user?.isPremium ?? false;
+    const all: string[] = await Question.distinct('companies');
 
-    // Fetch questions
-    const questions = await Question.find(query)
-      .limit(Number(limit))
-      .skip((Number(page) - 1) * Number(limit));
-
-    const total = await Question.countDocuments(query);
-
-    // Map questions: if question is premium and user is not premium, hide details
-    // For this, we'd need user info. So maybe we should use an optional auth middleware
-    // Let's just return the questions, the frontend will see isPremium and hide the body
-    
     res.json({
-      questions,
-      page: Number(page),
-      pages: Math.ceil(total / Number(limit)),
+      companies:    all,
+      freeCompanies: all,   // every company is now accessible
+      isPremium,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Server Error' });
+  }
+});
+
+// @route   GET /api/questions
+// @desc    Get questions
+//          Free users: first FREE_QUESTION_LIMIT per company (links included)
+//          Premium: all questions for all companies
+router.get('/', optionalAuth, async (req, res) => {
+  try {
+    const isPremium = (req as any).user?.isPremium ?? false;
+    const { company } = req.query;
+
+    // Build query filter
+    const filter: Record<string, unknown> = {};
+    if (company) filter.companies = company;
+
+    const allQuestions = await Question.find(filter).sort({ frequency: -1 });
+    const total = allQuestions.length;
+
+    if (!isPremium) {
+      // Free plan: first FREE_QUESTION_LIMIT questions with links included
+      return res.json({
+        questions: allQuestions.slice(0, FREE_QUESTION_LIMIT),
+        total,
+        hasMore:   total > FREE_QUESTION_LIMIT,
+        freeLimit: FREE_QUESTION_LIMIT,
+        isPremium: false,
+      });
+    }
+
+    // Premium: return everything
+    res.json({
+      questions: allQuestions,
       total,
+      hasMore:   false,
+      isPremium: true,
     });
   } catch (error) {
     console.error(error);
@@ -40,20 +66,13 @@ router.get('/', async (req, res) => {
 });
 
 // @route   GET /api/questions/:id
-// @desc    Get single question
-// @access  Private (Premium checked if question is premium)
-router.get('/:id', protect, async (req: AuthRequest, res) => {
+// @desc    Get a single question by its MongoDB ID
+router.get('/:id', async (req, res) => {
   try {
     const question = await Question.findById(req.params.id);
-    
     if (!question) {
       return res.status(404).json({ message: 'Question not found' });
     }
-
-    if (question.isPremium && !req.user?.isPremium) {
-      return res.status(403).json({ message: 'Premium content. Please upgrade.' });
-    }
-
     res.json(question);
   } catch (error) {
     console.error(error);
